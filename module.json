@@ -39,5 +39,8 @@
         "ASSISTANT": "OWNER"
       }
     }
-  ]
+  ],
+  "url": "https://github.com/TomHalverson/Intrinsics-Session-Starter",
+  "manifest": "https://raw.githubusercontent.com/TomHalverson/Intrinsics-Session-Starter/refs/heads/main/module.json",
+  "download": "https://github.com/TomHalverson/Intrinsics-Session-Starter/archive/refs/heads/main.zip"
 }
