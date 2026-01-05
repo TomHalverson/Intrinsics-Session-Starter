@@ -1,0 +1,43 @@
+{
+  "id": "intrinsics-session-starter",
+  "title": "Intrinsic's Session Starter",
+  "description": "Automates session start workflow with ready check, journal distribution, recap voting, and time management",
+  "version": "1.0.0",
+  "compatibility": {
+    "minimum": "11",
+    "verified": "13"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf2e",
+        "type": "system",
+        "compatibility": {}
+      }
+    ]
+  },
+  "scripts": [
+    "scripts/module.js"
+  ],
+  "styles": [
+    "styles/session-starter.css"
+  ],
+  "socket": true,
+  "authors": [
+    {
+      "name": "Intrinsic"
+    }
+  ],
+  "packs": [
+    {
+      "name": "session-starter-macros",
+      "label": "Session Starter: Macros",
+      "path": "packs/session-starter-macros",
+      "type": "Macro",
+      "ownership": {
+        "PLAYER": "OBSERVER",
+        "ASSISTANT": "OWNER"
+      }
+    }
+  ]
+}

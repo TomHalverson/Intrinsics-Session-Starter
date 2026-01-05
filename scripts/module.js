@@ -1,0 +1,111 @@
+// Intrinsic's Session Starter - Main Module Entry Point
+import { SessionManager } from './session-manager.js';
+import { SessionStarterApp } from './session-starter-app.js';
+import { initializeSocket } from './socket-handler.js';
+
+const MODULE_ID = "intrinsics-session-starter";
+
+// Initialize module
+Hooks.once("init", () => {
+  console.log(`${MODULE_ID} | Initializing`);
+
+  // Register module settings
+  registerSettings();
+
+  console.log(`${MODULE_ID} | Initialization complete`);
+});
+
+// Module ready
+Hooks.once("ready", () => {
+  console.log(`${MODULE_ID} | Ready`);
+
+  // Initialize socket listener
+  initializeSocket();
+
+  // Create global SessionManager instance
+  game.sessionManager = new SessionManager();
+
+  // Store SessionStarterApp class for later instantiation
+  const moduleData = game.modules.get(MODULE_ID);
+  if (moduleData) {
+    moduleData.sessionStarterApp = SessionStarterApp;
+  }
+
+  // Expose public API
+  if (moduleData) {
+    moduleData.api = {
+      startSession: () => {
+        if (!game.user.isGM) {
+          ui.notifications.error("Only the GM can start a session!");
+          return;
+        }
+        game.sessionManager.startSessionWorkflow();
+      },
+      skipStep: () => {
+        if (!game.user.isGM) {
+          ui.notifications.error("Only the GM can skip steps!");
+          return;
+        }
+        game.sessionManager.skipStep();
+      },
+      endSession: () => {
+        if (!game.user.isGM) {
+          ui.notifications.error("Only the GM can end the session!");
+          return;
+        }
+        game.sessionManager.endSession();
+      }
+    };
+  }
+
+  console.log(`${MODULE_ID} | Module loaded successfully`);
+});
+
+// Register module settings
+function registerSettings() {
+  game.settings.register(MODULE_ID, "housekeepingJournalId", {
+    name: "Housekeeping Journal UUID",
+    hint: "The journal entry to show at session start (use format: JournalEntry.xxx)",
+    scope: "world",
+    config: true,
+    type: String,
+    default: "JournalEntry.TjSjnMBDFBC5VTeD"
+  });
+
+  game.settings.register(MODULE_ID, "autoAdvanceReady", {
+    name: "Auto-Advance Ready Check",
+    hint: "Automatically proceed to next step when all players are ready",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true
+  });
+
+  game.settings.register(MODULE_ID, "readyCheckTimeout", {
+    name: "Ready Check Timeout (seconds)",
+    hint: "Time to wait before showing skip option (0 = no timeout). Not yet implemented.",
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 120,
+    range: {
+      min: 0,
+      max: 600,
+      step: 30
+    }
+  });
+
+  game.settings.register(MODULE_ID, "recapVotingTimeout", {
+    name: "Recap Voting Timeout (seconds)",
+    hint: "Time to wait for recap volunteers (0 = no timeout). Not yet implemented.",
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 30,
+    range: {
+      min: 0,
+      max: 300,
+      step: 10
+    }
+  });
+}
