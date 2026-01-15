@@ -9,16 +9,36 @@ export class SessionStarterApp extends Application {
       id: 'session-starter-display',
       classes: ['session-starter-display'],
       template: null, // Dynamic HTML generation
-      popOut: false,
+      popOut: true,
       minimizable: false,
       resizable: false,
       width: 420,
-      zIndex: 1000
+      height: "auto"
     });
   }
 
   get title() {
-    return 'Session Starter';
+    const sessionManager = game.sessionManager;
+    if (!sessionManager) return 'Session Starter';
+
+    const step = sessionManager.sessionState.currentStep;
+
+    switch(step) {
+      case STEPS.READY_CHECK:
+        return 'Session Starting - Ready Check';
+      case STEPS.JOURNAL:
+        return 'Housekeeping Journal';
+      case STEPS.RECAP:
+        return 'Who Will Recap?';
+      case STEPS.UNPAUSE:
+        return 'Session Started!';
+      default:
+        return 'Session Starter';
+    }
+  }
+
+  async getData() {
+    return {};
   }
 
   async _renderInner(data) {
@@ -30,7 +50,7 @@ export class SessionStarterApp extends Application {
     await super._render(force, options);
 
     if (this.element) {
-      this.positionDisplay();
+      this.activateListeners(this.element);
     }
   }
 
@@ -60,27 +80,19 @@ export class SessionStarterApp extends Application {
     const sessionManager = game.sessionManager;
     const players = sessionManager.sessionState.players;
 
-    let html = `
-      <div class="window-header">
-        <h3 class="window-title">
-          <i class="fas fa-clock"></i> Session Starting - Ready Check
-        </h3>
-      </div>
-      <div class="window-content">
-        <ul class="player-list">
-    `;
+    let html = `<ul class="player-list">`;
 
     // List all non-GM players
     for (const [userId, player] of players) {
       if (player.isGM) continue;
 
       const readyClass = player.ready ? 'ready' : 'waiting';
-      const statusIcon = player.ready ? '✓' : '⏳';
+      const statusText = player.ready ? 'Ready' : 'Waiting';
 
       html += `
         <li class="player-item ${readyClass}">
           <span class="player-name">${player.name}</span>
-          <span class="player-status">${statusIcon}</span>
+          <span class="player-status">${statusText}</span>
         </li>
       `;
     }
@@ -118,23 +130,16 @@ export class SessionStarterApp extends Application {
       `;
     }
 
-    html += '</div>';
     return html;
   }
 
   // Generate Journal Display HTML
   generateJournalHTML() {
     let html = `
-      <div class="window-header">
-        <h3 class="window-title">
-          <i class="fas fa-book"></i> Housekeeping Journal
-        </h3>
+      <div class="info-message">
+        <i class="fas fa-info-circle"></i>
+        <p>Journal opened for all players. Review the housekeeping items.</p>
       </div>
-      <div class="window-content">
-        <div class="info-message">
-          <i class="fas fa-info-circle"></i>
-          <p>Journal opened for all players. Review the housekeeping items.</p>
-        </div>
     `;
 
     // GM controls
@@ -152,7 +157,6 @@ export class SessionStarterApp extends Application {
       `;
     }
 
-    html += '</div>';
     return html;
   }
 
@@ -161,15 +165,7 @@ export class SessionStarterApp extends Application {
     const sessionManager = game.sessionManager;
     const players = sessionManager.sessionState.players;
 
-    let html = `
-      <div class="window-header">
-        <h3 class="window-title">
-          <i class="fas fa-history"></i> Who Will Recap?
-        </h3>
-      </div>
-      <div class="window-content">
-        <p class="instructions">Who wants to recap the last session?</p>
-    `;
+    let html = `<p class="instructions">Who wants to recap the last session?</p>`;
 
     // List volunteers
     const volunteers = Array.from(players.values()).filter(p => !p.isGM && p.wantsRecap);
@@ -180,7 +176,7 @@ export class SessionStarterApp extends Application {
         html += `
           <li class="player-item volunteering">
             <span class="player-name">${player.name}</span>
-            <span class="player-status">🙋</span>
+            <span class="player-status">Volunteering</span>
           </li>
         `;
       }
@@ -233,24 +229,16 @@ export class SessionStarterApp extends Application {
       html += '<p class="waiting-message">Waiting for GM to select recapper...</p>';
     }
 
-    html += '</div>';
     return html;
   }
 
   // Generate Unpause HTML
   generateUnpauseHTML() {
     return `
-      <div class="window-header">
-        <h3 class="window-title">
-          <i class="fas fa-check-circle"></i> Session Started!
-        </h3>
-      </div>
-      <div class="window-content">
-        <div class="session-success">
-          <i class="fas fa-play-circle"></i>
-          <h2>Time Resumed</h2>
-          <p>The session has begun. Good luck!</p>
-        </div>
+      <div class="session-success">
+        <i class="fas fa-play-circle"></i>
+        <h2>Time Resumed</h2>
+        <p>The session has begun!</p>
       </div>
     `;
   }
@@ -297,20 +285,15 @@ export class SessionStarterApp extends Application {
     if (!this.element) return;
 
     const html = await this.generateHTML();
-    this.element.html(html);
-    this.activateListeners(this.element);
-  }
 
-  // Position display on screen
-  positionDisplay() {
-    if (!this.element) return;
+    // Update title
+    this.element.find('.window-title').text(this.title);
 
-    const element = this.element[0];
-
-    element.style.position = 'fixed';
-    element.style.top = '50%';
-    element.style.left = '50%';
-    element.style.transform = 'translate(-50%, -50%)';
-    element.style.zIndex = '1000';
+    // Update content
+    const content = this.element.find('.window-content');
+    if (content.length > 0) {
+      content.html(html);
+      this.activateListeners(this.element);
+    }
   }
 }

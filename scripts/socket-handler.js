@@ -30,7 +30,13 @@ function handleSocketMessage(data) {
       onVolunteerRecap(data.userId, data.volunteering);
       break;
     case "showJournal":
-      onShowJournal(data.journalId);
+      onShowJournal(data.journalId, data.pageId);
+      break;
+    case "breakStart":
+      onBreakStart(data.endTime, data.duration);
+      break;
+    case "breakEnd":
+      onBreakEnd();
       break;
     default:
       console.warn(`${MODULE_ID} | Unknown socket action: ${data.action}`);
@@ -68,19 +74,54 @@ function onVolunteerRecap(userId, volunteering) {
 }
 
 // Handler: Show journal for all players
-async function onShowJournal(journalId) {
-  console.log(`${MODULE_ID} | Opening journal ${journalId}`);
+async function onShowJournal(journalId, pageId = null) {
+  console.log(`${MODULE_ID} | Opening journal ${journalId}${pageId ? ` to page ${pageId}` : ''}`);
 
   try {
     const journal = await fromUuid(journalId);
     if (journal) {
-      journal.sheet.render(true);
+      // Open to specific page if provided
+      if (pageId) {
+        journal.sheet.render(true, { pageId: pageId });
+      } else {
+        journal.sheet.render(true);
+      }
     } else {
       console.error(`${MODULE_ID} | Journal ${journalId} not found`);
     }
   } catch (error) {
     console.error(`${MODULE_ID} | Error opening journal:`, error);
   }
+}
+
+// Handler: Break started (for non-GM clients)
+function onBreakStart(endTime, duration) {
+  console.log(`${MODULE_ID} | Break started, ends at ${new Date(endTime)}`);
+
+  const sessionManager = game.sessionManager;
+  if (!sessionManager) return;
+
+  // Update local state
+  sessionManager.sessionState.breakActive = true;
+  sessionManager.sessionState.breakEndTime = endTime;
+
+  // Show break UI
+  sessionManager.showBreakUI();
+}
+
+// Handler: Break ended (for non-GM clients)
+function onBreakEnd() {
+  console.log(`${MODULE_ID} | Break ended`);
+
+  const sessionManager = game.sessionManager;
+  if (!sessionManager) return;
+
+  // Update local state
+  sessionManager.sessionState.breakActive = false;
+  sessionManager.sessionState.breakEndTime = null;
+
+  // Close break UI
+  sessionManager.closeBreakUI();
 }
 
 // Emit socket message (helper function)

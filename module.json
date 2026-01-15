@@ -16,7 +16,7 @@
       }
     ]
   },
-  "scripts": [
+  "esmodules": [
     "scripts/module.js"
   ],
   "styles": [
@@ -31,7 +31,7 @@
   "packs": [
     {
       "name": "session-starter-macros",
-      "label": "Session Starter: Macros",
+      "label": "Intrinsics Session Starter",
       "path": "packs/session-starter-macros",
       "type": "Macro",
       "ownership": {

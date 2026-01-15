@@ -1,6 +1,7 @@
 // Intrinsic's Session Starter - Main Module Entry Point
 import { SessionManager } from './session-manager.js';
 import { SessionStarterApp } from './session-starter-app.js';
+import { SessionBreakApp } from './session-break-app.js';
 import { initializeSocket } from './socket-handler.js';
 
 const MODULE_ID = "intrinsics-session-starter";
@@ -19,6 +20,14 @@ Hooks.once("init", () => {
 Hooks.once("ready", () => {
   console.log(`${MODULE_ID} | Ready`);
 
+  // Migrate incorrect hero point path setting if needed
+  const currentPath = game.settings.get(MODULE_ID, "heroPointPath");
+  if (currentPath === "system.heroPoints.value") {
+    console.log(`${MODULE_ID} | Migrating hero point path to correct PF2e location`);
+    game.settings.set(MODULE_ID, "heroPointPath", "system.resources.heroPoints.value");
+    ui.notifications.info("Session Starter: Fixed hero point path to system.resources.heroPoints.value");
+  }
+
   // Initialize socket listener
   initializeSocket();
 
@@ -29,6 +38,7 @@ Hooks.once("ready", () => {
   const moduleData = game.modules.get(MODULE_ID);
   if (moduleData) {
     moduleData.sessionStarterApp = SessionStarterApp;
+    moduleData.sessionBreakApp = SessionBreakApp;
   }
 
   // Expose public API
@@ -54,6 +64,20 @@ Hooks.once("ready", () => {
           return;
         }
         game.sessionManager.endSession();
+      },
+      startBreak: (minutes) => {
+        if (!game.user.isGM) {
+          ui.notifications.error("Only the GM can start a break!");
+          return;
+        }
+        game.sessionManager.startBreak(minutes);
+      },
+      endBreak: () => {
+        if (!game.user.isGM) {
+          ui.notifications.error("Only the GM can end a break!");
+          return;
+        }
+        game.sessionManager.endBreak();
       }
     };
   }
@@ -106,6 +130,38 @@ function registerSettings() {
       min: 0,
       max: 300,
       step: 10
+    }
+  });
+
+  game.settings.register(MODULE_ID, "heroPointPath", {
+    name: "Hero/Mythic Point Attribute Path",
+    hint: "The path to the hero point attribute on player characters (e.g., 'system.resources.heroPoints.value' for PF2e)",
+    scope: "world",
+    config: true,
+    type: String,
+    default: "system.resources.heroPoints.value"
+  });
+
+  game.settings.register(MODULE_ID, "awardHeroPointOnStart", {
+    name: "Award Hero Point on Session Start",
+    hint: "Automatically award a hero/mythic point to all players when the session starts.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true
+  });
+
+  game.settings.register(MODULE_ID, "breakDuration", {
+    name: "Break Duration (minutes)",
+    hint: "Default duration for session breaks.",
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 10,
+    range: {
+      min: 1,
+      max: 30,
+      step: 1
     }
   });
 }

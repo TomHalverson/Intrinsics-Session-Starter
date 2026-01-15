@@ -18,7 +18,11 @@ export class SessionManager {
       journalId: "",
       selectedRecapper: null,
       initiatingGM: null,
-      autoAdvance: true
+      autoAdvance: true,
+      // Break state
+      breakActive: false,
+      breakEndTime: null,
+      breakTimerId: null
     };
   }
 
@@ -193,16 +197,26 @@ export class SessionManager {
 
     console.log(`${MODULE_ID} | Opening journal ${journalId} for all players`);
 
+    // Get the last page ID
+    const pages = journal.pages?.contents || [];
+    const lastPage = pages.length > 0 ? pages[pages.length - 1] : null;
+    const lastPageId = lastPage?.id || null;
+
     // Emit to all clients
     if (game.socket) {
       game.socket.emit(`module.${MODULE_ID}`, {
         action: "showJournal",
-        journalId: journalId
+        journalId: journalId,
+        pageId: lastPageId
       });
     }
 
-    // Open on GM's client too
-    journal.sheet.render(true);
+    // Open on GM's client too, to last page
+    if (lastPageId) {
+      journal.sheet.render(true, { pageId: lastPageId });
+    } else {
+      journal.sheet.render(true);
+    }
   }
 
   // Start recap voting phase
@@ -315,6 +329,15 @@ export class SessionManager {
 
   // Announce selected recapper in chat
   async announceRecapper(player) {
+    // Award 1 extra hero point to the recapper (bonus for doing the recap)
+    // They already get 1 from session start, so this gives them 2 total
+    const awardHeroPoints = game.settings.get(MODULE_ID, "awardHeroPointOnStart");
+    console.log(`${MODULE_ID} | [DEBUG] announceRecapper - awardHeroPoints setting: ${awardHeroPoints}, isGM: ${game.user.isGM}`);
+    
+    if (awardHeroPoints && game.user.isGM) {
+      await this.awardHeroPointToPlayer(player.id, 1, "doing the recap");
+    }
+
     await ChatMessage.create({
       content: `<p><strong>${player.name}</strong> will recap the last session!</p>`,
       whisper: []
@@ -330,7 +353,7 @@ export class SessionManager {
     if (!simpleTimekeeping?.active) {
       ui.notifications.warn("Simple Timekeeping not active. Using standard unpause.");
       await game.togglePause(false);
-      this.announceSessionStart();
+      await this.announceSessionStart();
 
       // Auto-close after 3 seconds
       setTimeout(() => this.endSession(), 3000);
@@ -359,7 +382,7 @@ export class SessionManager {
 
       if (resumed) {
         ui.notifications.info("Time resumed!");
-        this.announceSessionStart();
+        await this.announceSessionStart();
       }
     } catch (error) {
       console.error(`${MODULE_ID} | Error resuming time:`, error);
@@ -368,7 +391,7 @@ export class SessionManager {
       // Try fallback
       try {
         await game.togglePause(false);
-        this.announceSessionStart();
+        await this.announceSessionStart();
       } catch (fallbackError) {
         console.error(`${MODULE_ID} | Fallback unpause failed:`, fallbackError);
       }
@@ -380,15 +403,385 @@ export class SessionManager {
 
   // Announce session start in chat
   async announceSessionStart() {
+    // Award hero points if enabled
+    const awardHeroPoints = game.settings.get(MODULE_ID, "awardHeroPointOnStart");
+    console.log(`${MODULE_ID} | [DEBUG] announceSessionStart - awardHeroPointOnStart setting: ${awardHeroPoints}, isGM: ${game.user.isGM}`);
+    
+    if (awardHeroPoints && game.user.isGM) {
+      console.log(`${MODULE_ID} | [DEBUG] Calling awardHeroPointsToAllPlayers for Session Start`);
+      await this.awardHeroPointsToAllPlayers("Session Start");
+    } else {
+      console.log(`${MODULE_ID} | [DEBUG] Skipping hero point award - awardHeroPoints: ${awardHeroPoints}, isGM: ${game.user.isGM}`);
+    }
+
     await ChatMessage.create({
       content: `
         <div style="text-align: center; padding: 10px;">
-          <h2 style="margin: 0; color: #4a9eff;">🎲 Session Started! 🎲</h2>
-          <p style="margin: 5px 0;">Time is running. Good luck adventurers!</p>
+          <h2 style="margin: 0; color: #4a9eff;">Session Started!</h2>
+          <p style="margin: 5px 0;">Time is running. Try not to die!</p>
         </div>
       `,
       whisper: []
     });
+  }
+
+  // Award hero/mythic points to all active player characters
+  async awardHeroPointsToAllPlayers(reason = "Session Reward") {
+    if (!game.user.isGM) {
+      console.log(`${MODULE_ID} | [DEBUG] awardHeroPointsToAllPlayers called but user is not GM`);
+      return;
+    }
+
+    const heroPointPath = game.settings.get(MODULE_ID, "heroPointPath");
+    console.log(`${MODULE_ID} | [DEBUG] Hero point path setting: "${heroPointPath}"`);
+    
+    if (!heroPointPath) {
+      console.warn(`${MODULE_ID} | No hero point path configured`);
+      ui.notifications.warn("Session Starter: No hero point path configured in settings!");
+      return;
+    }
+
+    console.log(`${MODULE_ID} | [DEBUG] Starting hero point award for reason: ${reason}`);
+    console.log(`${MODULE_ID} | [DEBUG] Total users in game: ${game.users.size}`);
+
+    const awardedPlayers = [];
+    const skippedUsers = [];
+
+    // Get all active non-GM users and their assigned characters
+    for (const user of game.users) {
+      console.log(`${MODULE_ID} | [DEBUG] Checking user: ${user.name} (isGM: ${user.isGM}, active: ${user.active})`);
+      
+      if (user.isGM) {
+        console.log(`${MODULE_ID} | [DEBUG] Skipping ${user.name} - is GM`);
+        continue;
+      }
+      
+      if (!user.active) {
+        console.log(`${MODULE_ID} | [DEBUG] Skipping ${user.name} - not active`);
+        skippedUsers.push(`${user.name} (offline)`);
+        continue;
+      }
+
+      const character = user.character;
+      if (!character) {
+        console.log(`${MODULE_ID} | [DEBUG] User ${user.name} has no assigned character`);
+        skippedUsers.push(`${user.name} (no character)`);
+        continue;
+      }
+
+      console.log(`${MODULE_ID} | [DEBUG] User ${user.name} has character: ${character.name} (id: ${character.id})`);
+
+      try {
+        // Get current value using the path
+        const currentValue = foundry.utils.getProperty(character, heroPointPath);
+        console.log(`${MODULE_ID} | [DEBUG] Current value at path "${heroPointPath}": ${currentValue} (type: ${typeof currentValue})`);
+        
+        // Debug: Log the actual hero points structure in PF2e
+        console.log(`${MODULE_ID} | [DEBUG] character.system.heroPoints:`, JSON.stringify(character.system?.heroPoints));
+        console.log(`${MODULE_ID} | [DEBUG] character.system.resources:`, JSON.stringify(character.system?.resources));
+        
+        if (currentValue === undefined) {
+          console.warn(`${MODULE_ID} | [DEBUG] Path "${heroPointPath}" returned undefined for ${character.name} - path may be incorrect!`);
+          // Try to log the character's system data structure for debugging
+          console.log(`${MODULE_ID} | [DEBUG] Character system data keys:`, Object.keys(character.system || {}));
+        }
+        
+        const numericCurrentValue = currentValue ?? 0;
+        const newValue = numericCurrentValue + 1;
+
+        console.log(`${MODULE_ID} | [DEBUG] Updating ${character.name}: ${numericCurrentValue} -> ${newValue}`);
+        console.log(`${MODULE_ID} | [DEBUG] Update payload:`, JSON.stringify({ [heroPointPath]: newValue }));
+
+        // Update the character
+        const updateResult = await character.update({ [heroPointPath]: newValue });
+        console.log(`${MODULE_ID} | [DEBUG] Update result:`, updateResult);
+        
+        // Verify the update worked
+        const verifyValue = foundry.utils.getProperty(character, heroPointPath);
+        console.log(`${MODULE_ID} | [DEBUG] Verification - value after update: ${verifyValue}`);
+        
+        if (verifyValue !== newValue) {
+          console.warn(`${MODULE_ID} | [DEBUG] Update may have failed! Expected ${newValue}, got ${verifyValue}`);
+        }
+
+        awardedPlayers.push(character.name);
+        console.log(`${MODULE_ID} | Awarded hero point to ${character.name} (${numericCurrentValue} -> ${newValue})`);
+      } catch (error) {
+        console.error(`${MODULE_ID} | Failed to award hero point to ${character.name}:`, error);
+        ui.notifications.error(`Failed to award point to ${character.name}: ${error.message}`);
+      }
+    }
+
+    // Display chat message for awarded points
+    if (awardedPlayers.length > 0) {
+      const playerList = awardedPlayers.map(name => `<li>${name}</li>`).join('');
+      try {
+        await ChatMessage.create({
+          content: `
+            <div style="text-align: center; padding: 8px; background: linear-gradient(135deg, rgba(250, 204, 21, 0.2) 0%, rgba(234, 179, 8, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(250, 204, 21, 0.5);">
+              <h4 style="margin: 0 0 8px 0; color: #fbbf24;"><i class="fas fa-star"></i> Hero Points Awarded!</h4>
+              <p style="margin: 0 0 8px 0; font-size: 12px; color: #9CA3AF;">${reason}</p>
+              <ul style="list-style: none; padding: 0; margin: 0; color: #E5E7EB;">${playerList}</ul>
+            </div>
+          `,
+          whisper: []
+        });
+      } catch (chatError) {
+        console.error(`${MODULE_ID} | Error creating chat message:`, chatError);
+      }
+      console.log(`${MODULE_ID} | [DEBUG] Successfully awarded points to ${awardedPlayers.length} players`);
+    } else {
+      console.warn(`${MODULE_ID} | [DEBUG] No players were awarded hero points!`);
+      if (skippedUsers.length > 0) {
+        console.log(`${MODULE_ID} | [DEBUG] Skipped users: ${skippedUsers.join(', ')}`);
+      }
+    }
+
+    return awardedPlayers;
+  }
+
+  // Award hero/mythic points to a specific player
+  async awardHeroPointToPlayer(userId, amount = 1, reason = "Reward") {
+    if (!game.user.isGM) {
+      console.log(`${MODULE_ID} | [DEBUG] awardHeroPointToPlayer called but user is not GM`);
+      return;
+    }
+
+    const heroPointPath = game.settings.get(MODULE_ID, "heroPointPath");
+    console.log(`${MODULE_ID} | [DEBUG] awardHeroPointToPlayer - path: "${heroPointPath}", userId: ${userId}, amount: ${amount}, reason: ${reason}`);
+    
+    if (!heroPointPath) {
+      console.warn(`${MODULE_ID} | No hero point path configured`);
+      ui.notifications.warn("Session Starter: No hero point path configured in settings!");
+      return;
+    }
+
+    const user = game.users.get(userId);
+    if (!user) {
+      console.log(`${MODULE_ID} | [DEBUG] User ${userId} not found`);
+      return;
+    }
+    
+    if (user.isGM) {
+      console.log(`${MODULE_ID} | [DEBUG] User ${user.name} is GM, skipping`);
+      return;
+    }
+
+    const character = user.character;
+    if (!character) {
+      console.log(`${MODULE_ID} | [DEBUG] User ${user.name} has no assigned character`);
+      return;
+    }
+
+    try {
+      const currentValue = foundry.utils.getProperty(character, heroPointPath);
+      console.log(`${MODULE_ID} | [DEBUG] Current value for ${character.name}: ${currentValue} (type: ${typeof currentValue})`);
+      
+      const numericCurrentValue = currentValue ?? 0;
+      const newValue = numericCurrentValue + amount;
+
+      await character.update({ [heroPointPath]: newValue });
+
+      console.log(`${MODULE_ID} | Awarded ${amount} hero point(s) to ${character.name} (${numericCurrentValue} -> ${newValue})`);
+
+      // Display chat message for the bonus point
+      try {
+        await ChatMessage.create({
+          content: `
+            <div style="text-align: center; padding: 8px; background: linear-gradient(135deg, rgba(168, 85, 247, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.5);">
+              <h4 style="margin: 0 0 4px 0; color: #a855f7;"><i class="fas fa-star"></i> Bonus Hero Point!</h4>
+              <p style="margin: 0; color: #E5E7EB;"><strong>${character.name}</strong> received ${amount} bonus point${amount > 1 ? 's' : ''} for ${reason}!</p>
+            </div>
+          `,
+          whisper: []
+        });
+      } catch (chatError) {
+        console.error(`${MODULE_ID} | Error creating chat message:`, chatError);
+      }
+
+      return character.name;
+    } catch (error) {
+      console.error(`${MODULE_ID} | Failed to award hero point to ${character.name}:`, error);
+      ui.notifications.error(`Failed to award point to ${character.name}: ${error.message}`);
+    }
+  }
+
+  // Start a session break with timer
+  async startBreak(minutes = null) {
+    if (!game.user.isGM) {
+      ui.notifications.error("Only the GM can start a break!");
+      return;
+    }
+
+    if (this.sessionState.breakActive) {
+      ui.notifications.warn("A break is already in progress!");
+      return;
+    }
+
+    // Use provided minutes or get from settings
+    const breakMinutes = minutes ?? game.settings.get(MODULE_ID, "breakDuration");
+    const breakDurationMs = breakMinutes * 60 * 1000;
+
+    console.log(`${MODULE_ID} | Starting ${breakMinutes} minute break`);
+
+    this.sessionState.breakActive = true;
+    this.sessionState.breakEndTime = Date.now() + breakDurationMs;
+
+    // Pause the game if Simple Timekeeping is active
+    this.pauseForBreak();
+
+    // Set up auto-end timer (GM only)
+    this.sessionState.breakTimerId = setTimeout(() => {
+      this.endBreak();
+    }, breakDurationMs);
+
+    // Broadcast state and show UI
+    this.broadcastState();
+
+    // Emit break start to show UI on all clients
+    if (game.socket) {
+      game.socket.emit(`module.${MODULE_ID}`, {
+        action: "breakStart",
+        endTime: this.sessionState.breakEndTime,
+        duration: breakMinutes
+      });
+    }
+
+    // Show break UI
+    this.showBreakUI();
+
+    // Award hero points at break start
+    await this.awardHeroPointsToAllPlayers("Break Reward");
+
+    // Announce in chat
+    ChatMessage.create({
+      content: `
+        <div style="text-align: center; padding: 10px; background: linear-gradient(135deg, rgba(96, 165, 250, 0.2) 0%, rgba(59, 130, 246, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(96, 165, 250, 0.5);">
+          <h3 style="margin: 0 0 8px 0; color: #60a5fa;"><i class="fas fa-coffee"></i> Break Time!</h3>
+          <p style="margin: 0; color: #E5E7EB;">Taking a <strong>${breakMinutes} minute</strong> break.</p>
+          <p style="margin: 5px 0 0 0; font-size: 12px; color: #9CA3AF;">Stretch, hydrate, and return refreshed!</p>
+        </div>
+      `,
+      whisper: []
+    });
+
+    ui.notifications.info(`Break started! ${breakMinutes} minutes.`);
+  }
+
+  // End the break and award hero points
+  async endBreak() {
+    if (!game.user.isGM) return;
+
+    if (!this.sessionState.breakActive) return;
+
+    console.log(`${MODULE_ID} | Ending break`);
+
+    // Clear the timer if it exists
+    if (this.sessionState.breakTimerId) {
+      clearTimeout(this.sessionState.breakTimerId);
+      this.sessionState.breakTimerId = null;
+    }
+
+    // Resume time
+    await this.resumeFromBreak();
+
+    this.sessionState.breakActive = false;
+    this.sessionState.breakEndTime = null;
+
+    // Broadcast state
+    this.broadcastState();
+
+    // Emit break end to all clients
+    if (game.socket) {
+      game.socket.emit(`module.${MODULE_ID}`, {
+        action: "breakEnd"
+      });
+    }
+
+    // Close break UI
+    this.closeBreakUI();
+
+    // Announce in chat
+    await ChatMessage.create({
+      content: `
+        <div style="text-align: center; padding: 10px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.5);">
+          <h3 style="margin: 0 0 8px 0; color: #10b981;"><i class="fas fa-play-circle"></i> Break Over!</h3>
+          <p style="margin: 0; color: #E5E7EB;">Welcome back! The adventure continues...</p>
+        </div>
+      `,
+      whisper: []
+    });
+
+    ui.notifications.info("Break ended!");
+  }
+
+  // Pause game for break
+  async pauseForBreak() {
+    const simpleTimekeeping = game.modules.get("simple-timekeeping");
+
+    if (simpleTimekeeping?.active) {
+      try {
+        if (game.simpleTimekeeping?.pause) {
+          await game.simpleTimekeeping.pause();
+        } else if (game.simpleTimekeeping?.api?.pause) {
+          await game.simpleTimekeeping.api.pause();
+        } else if (simpleTimekeeping.api?.pause) {
+          await simpleTimekeeping.api.pause();
+        } else {
+          await game.togglePause(true);
+        }
+      } catch (error) {
+        console.warn(`${MODULE_ID} | Could not pause Simple Timekeeping:`, error);
+        await game.togglePause(true);
+      }
+    } else {
+      await game.togglePause(true);
+    }
+  }
+
+  // Resume game from break
+  async resumeFromBreak() {
+    const simpleTimekeeping = game.modules.get("simple-timekeeping");
+
+    if (simpleTimekeeping?.active) {
+      try {
+        if (game.simpleTimekeeping?.resume) {
+          await game.simpleTimekeeping.resume();
+        } else if (game.simpleTimekeeping?.api?.resume) {
+          await game.simpleTimekeeping.api.resume();
+        } else if (simpleTimekeeping.api?.resume) {
+          await simpleTimekeeping.api.resume();
+        } else {
+          await game.togglePause(false);
+        }
+      } catch (error) {
+        console.warn(`${MODULE_ID} | Could not resume Simple Timekeeping:`, error);
+        await game.togglePause(false);
+      }
+    } else {
+      await game.togglePause(false);
+    }
+  }
+
+  // Show break UI on all clients
+  showBreakUI() {
+    if (!game.sessionBreakApp) {
+      const SessionBreakApp = game.modules.get(MODULE_ID)?.sessionBreakApp;
+      if (SessionBreakApp) {
+        game.sessionBreakApp = new SessionBreakApp();
+        game.sessionBreakApp.render(true);
+      }
+    } else {
+      game.sessionBreakApp.render(true);
+    }
+  }
+
+  // Close break UI
+  closeBreakUI() {
+    if (game.sessionBreakApp) {
+      game.sessionBreakApp.close();
+      game.sessionBreakApp = null;
+    }
   }
 
   // End session workflow
@@ -430,7 +823,9 @@ export class SessionManager {
       journalId: this.sessionState.journalId,
       selectedRecapper: this.sessionState.selectedRecapper,
       initiatingGM: this.sessionState.initiatingGM,
-      autoAdvance: this.sessionState.autoAdvance
+      autoAdvance: this.sessionState.autoAdvance,
+      breakActive: this.sessionState.breakActive,
+      breakEndTime: this.sessionState.breakEndTime
     };
   }
 
@@ -447,6 +842,8 @@ export class SessionManager {
     this.sessionState.selectedRecapper = stateJSON.selectedRecapper;
     this.sessionState.initiatingGM = stateJSON.initiatingGM;
     this.sessionState.autoAdvance = stateJSON.autoAdvance;
+    this.sessionState.breakActive = stateJSON.breakActive;
+    this.sessionState.breakEndTime = stateJSON.breakEndTime;
 
     this.refreshUI();
   }
