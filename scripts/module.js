@@ -20,14 +20,6 @@ Hooks.once("init", () => {
 Hooks.once("ready", () => {
   console.log(`${MODULE_ID} | Ready`);
 
-  // Migrate incorrect hero point path setting if needed
-  const currentPath = game.settings.get(MODULE_ID, "heroPointPath");
-  if (currentPath === "system.heroPoints.value") {
-    console.log(`${MODULE_ID} | Migrating hero point path to correct PF2e location`);
-    game.settings.set(MODULE_ID, "heroPointPath", "system.resources.heroPoints.value");
-    ui.notifications.info("Session Starter: Fixed hero point path to system.resources.heroPoints.value");
-  }
-
   // Initialize socket listener
   initializeSocket();
 
@@ -134,8 +126,8 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, "heroPointPath", {
-    name: "Hero/Mythic Point Attribute Path",
-    hint: "The path to the hero point attribute on player characters (e.g., 'system.resources.heroPoints.value' for PF2e)",
+    name: "Hero/Mythic Point Attribute Path (Info Only)",
+    hint: "The module now auto-detects hero/mythic points from system.resources (matching pf2e-hud behaviour). This setting is no longer used.",
     scope: "world",
     config: true,
     type: String,

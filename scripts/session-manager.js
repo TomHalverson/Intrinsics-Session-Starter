@@ -57,11 +57,13 @@ export class SessionManager {
     ui.notifications.info("Session workflow started!");
   }
 
-  // Initialize player list from game.users
+  // Initialize player list from online users only
   initializePlayers() {
     this.sessionState.players.clear();
 
     game.users.forEach(user => {
+      if (!user.active) return; // Skip offline users
+
       this.sessionState.players.set(user.id, {
         id: user.id,
         name: user.name,
@@ -425,116 +427,91 @@ export class SessionManager {
     });
   }
 
+  // Get the mythic or hero point resource from a PF2e character.
+  // Mirrors the approach used by pf2e-hud: checks mythicPoints first,
+  // falls back to heroPoints. Returns {name, value, max} or null.
+  _getHeroOrMythicResource(character) {
+    const resources = character.system?.resources;
+    if (!resources) {
+      console.warn(`${MODULE_ID} | ${character.name} has no system.resources`);
+      return null;
+    }
+
+    // If mythic points have a max > 0, use those instead (same logic as pf2e-hud)
+    if (resources.mythicPoints?.max > 0) {
+      console.log(`${MODULE_ID} | Using mythicPoints for ${character.name} (value: ${resources.mythicPoints.value}, max: ${resources.mythicPoints.max})`);
+      return {
+        name: "mythicPoints",
+        value: resources.mythicPoints.value ?? 0,
+        max: resources.mythicPoints.max
+      };
+    }
+
+    if (resources.heroPoints) {
+      console.log(`${MODULE_ID} | Using heroPoints for ${character.name} (value: ${resources.heroPoints.value}, max: ${resources.heroPoints.max})`);
+      return {
+        name: "heroPoints",
+        value: resources.heroPoints.value ?? 0,
+        max: resources.heroPoints.max ?? 3
+      };
+    }
+
+    console.warn(`${MODULE_ID} | ${character.name} has no heroPoints or mythicPoints in system.resources`);
+    return null;
+  }
+
   // Award hero/mythic points to all active player characters
   async awardHeroPointsToAllPlayers(reason = "Session Reward") {
-    if (!game.user.isGM) {
-      console.log(`${MODULE_ID} | [DEBUG] awardHeroPointsToAllPlayers called but user is not GM`);
-      return;
-    }
+    if (!game.user.isGM) return;
 
-    const heroPointPath = game.settings.get(MODULE_ID, "heroPointPath");
-    console.log(`${MODULE_ID} | [DEBUG] Hero point path setting: "${heroPointPath}"`);
-    
-    if (!heroPointPath) {
-      console.warn(`${MODULE_ID} | No hero point path configured`);
-      ui.notifications.warn("Session Starter: No hero point path configured in settings!");
-      return;
-    }
-
-    console.log(`${MODULE_ID} | [DEBUG] Starting hero point award for reason: ${reason}`);
-    console.log(`${MODULE_ID} | [DEBUG] Total users in game: ${game.users.size}`);
+    console.log(`${MODULE_ID} | Awarding hero points to all players — reason: ${reason}`);
 
     const awardedPlayers = [];
-    const skippedUsers = [];
 
-    // Get all active non-GM users and their assigned characters
     for (const user of game.users) {
-      console.log(`${MODULE_ID} | [DEBUG] Checking user: ${user.name} (isGM: ${user.isGM}, active: ${user.active})`);
-      
-      if (user.isGM) {
-        console.log(`${MODULE_ID} | [DEBUG] Skipping ${user.name} - is GM`);
-        continue;
-      }
-      
-      if (!user.active) {
-        console.log(`${MODULE_ID} | [DEBUG] Skipping ${user.name} - not active`);
-        skippedUsers.push(`${user.name} (offline)`);
-        continue;
-      }
+      if (user.isGM || !user.active) continue;
 
       const character = user.character;
       if (!character) {
-        console.log(`${MODULE_ID} | [DEBUG] User ${user.name} has no assigned character`);
-        skippedUsers.push(`${user.name} (no character)`);
+        console.log(`${MODULE_ID} | Skipping ${user.name} — no assigned character`);
         continue;
       }
 
-      console.log(`${MODULE_ID} | [DEBUG] User ${user.name} has character: ${character.name} (id: ${character.id})`);
-
       try {
-        // Get current value using the path
-        const currentValue = foundry.utils.getProperty(character, heroPointPath);
-        console.log(`${MODULE_ID} | [DEBUG] Current value at path "${heroPointPath}": ${currentValue} (type: ${typeof currentValue})`);
-        
-        // Debug: Log the actual hero points structure in PF2e
-        console.log(`${MODULE_ID} | [DEBUG] character.system.heroPoints:`, JSON.stringify(character.system?.heroPoints));
-        console.log(`${MODULE_ID} | [DEBUG] character.system.resources:`, JSON.stringify(character.system?.resources));
-        
-        if (currentValue === undefined) {
-          console.warn(`${MODULE_ID} | [DEBUG] Path "${heroPointPath}" returned undefined for ${character.name} - path may be incorrect!`);
-          // Try to log the character's system data structure for debugging
-          console.log(`${MODULE_ID} | [DEBUG] Character system data keys:`, Object.keys(character.system || {}));
-        }
-        
-        const numericCurrentValue = currentValue ?? 0;
-        const newValue = numericCurrentValue + 1;
+        const resource = this._getHeroOrMythicResource(character);
+        if (!resource) continue;
 
-        console.log(`${MODULE_ID} | [DEBUG] Updating ${character.name}: ${numericCurrentValue} -> ${newValue}`);
-        console.log(`${MODULE_ID} | [DEBUG] Update payload:`, JSON.stringify({ [heroPointPath]: newValue }));
-
-        // Update the character
-        const updateResult = await character.update({ [heroPointPath]: newValue });
-        console.log(`${MODULE_ID} | [DEBUG] Update result:`, updateResult);
-        
-        // Verify the update worked
-        const verifyValue = foundry.utils.getProperty(character, heroPointPath);
-        console.log(`${MODULE_ID} | [DEBUG] Verification - value after update: ${verifyValue}`);
-        
-        if (verifyValue !== newValue) {
-          console.warn(`${MODULE_ID} | [DEBUG] Update may have failed! Expected ${newValue}, got ${verifyValue}`);
+        const newValue = Math.min(resource.value + 1, resource.max);
+        if (newValue === resource.value) {
+          console.log(`${MODULE_ID} | ${character.name} already at max ${resource.name} (${resource.value}/${resource.max})`);
+          awardedPlayers.push(character.name);
+          continue;
         }
+
+        // Update exactly like pf2e-hud does: system.resources.<name>.value
+        await character.update({ [`system.resources.${resource.name}.value`]: newValue });
 
         awardedPlayers.push(character.name);
-        console.log(`${MODULE_ID} | Awarded hero point to ${character.name} (${numericCurrentValue} -> ${newValue})`);
+        console.log(`${MODULE_ID} | Awarded ${resource.name} to ${character.name} (${resource.value} → ${newValue})`);
       } catch (error) {
         console.error(`${MODULE_ID} | Failed to award hero point to ${character.name}:`, error);
         ui.notifications.error(`Failed to award point to ${character.name}: ${error.message}`);
       }
     }
 
-    // Display chat message for awarded points
+    // Chat message
     if (awardedPlayers.length > 0) {
       const playerList = awardedPlayers.map(name => `<li>${name}</li>`).join('');
-      try {
-        await ChatMessage.create({
-          content: `
-            <div style="text-align: center; padding: 8px; background: linear-gradient(135deg, rgba(250, 204, 21, 0.2) 0%, rgba(234, 179, 8, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(250, 204, 21, 0.5);">
-              <h4 style="margin: 0 0 8px 0; color: #fbbf24;"><i class="fas fa-star"></i> Hero Points Awarded!</h4>
-              <p style="margin: 0 0 8px 0; font-size: 12px; color: #9CA3AF;">${reason}</p>
-              <ul style="list-style: none; padding: 0; margin: 0; color: #E5E7EB;">${playerList}</ul>
-            </div>
-          `,
-          whisper: []
-        });
-      } catch (chatError) {
-        console.error(`${MODULE_ID} | Error creating chat message:`, chatError);
-      }
-      console.log(`${MODULE_ID} | [DEBUG] Successfully awarded points to ${awardedPlayers.length} players`);
-    } else {
-      console.warn(`${MODULE_ID} | [DEBUG] No players were awarded hero points!`);
-      if (skippedUsers.length > 0) {
-        console.log(`${MODULE_ID} | [DEBUG] Skipped users: ${skippedUsers.join(', ')}`);
-      }
+      await ChatMessage.create({
+        content: `
+          <div style="text-align: center; padding: 8px; background: linear-gradient(135deg, rgba(250, 204, 21, 0.2) 0%, rgba(234, 179, 8, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(250, 204, 21, 0.5);">
+            <h4 style="margin: 0 0 8px 0; color: #fbbf24;"><i class="fas fa-star"></i> Hero Points Awarded!</h4>
+            <p style="margin: 0 0 8px 0; font-size: 12px; color: #9CA3AF;">${reason}</p>
+            <ul style="list-style: none; padding: 0; margin: 0; color: #E5E7EB;">${playerList}</ul>
+          </div>
+        `,
+        whisper: []
+      });
     }
 
     return awardedPlayers;
@@ -542,62 +519,37 @@ export class SessionManager {
 
   // Award hero/mythic points to a specific player
   async awardHeroPointToPlayer(userId, amount = 1, reason = "Reward") {
-    if (!game.user.isGM) {
-      console.log(`${MODULE_ID} | [DEBUG] awardHeroPointToPlayer called but user is not GM`);
-      return;
-    }
-
-    const heroPointPath = game.settings.get(MODULE_ID, "heroPointPath");
-    console.log(`${MODULE_ID} | [DEBUG] awardHeroPointToPlayer - path: "${heroPointPath}", userId: ${userId}, amount: ${amount}, reason: ${reason}`);
-    
-    if (!heroPointPath) {
-      console.warn(`${MODULE_ID} | No hero point path configured`);
-      ui.notifications.warn("Session Starter: No hero point path configured in settings!");
-      return;
-    }
+    if (!game.user.isGM) return;
 
     const user = game.users.get(userId);
-    if (!user) {
-      console.log(`${MODULE_ID} | [DEBUG] User ${userId} not found`);
-      return;
-    }
-    
-    if (user.isGM) {
-      console.log(`${MODULE_ID} | [DEBUG] User ${user.name} is GM, skipping`);
-      return;
-    }
+    if (!user || user.isGM) return;
 
     const character = user.character;
     if (!character) {
-      console.log(`${MODULE_ID} | [DEBUG] User ${user.name} has no assigned character`);
+      console.log(`${MODULE_ID} | User ${user.name} has no assigned character, skipping bonus award`);
       return;
     }
 
     try {
-      const currentValue = foundry.utils.getProperty(character, heroPointPath);
-      console.log(`${MODULE_ID} | [DEBUG] Current value for ${character.name}: ${currentValue} (type: ${typeof currentValue})`);
-      
-      const numericCurrentValue = currentValue ?? 0;
-      const newValue = numericCurrentValue + amount;
+      const resource = this._getHeroOrMythicResource(character);
+      if (!resource) return;
 
-      await character.update({ [heroPointPath]: newValue });
+      const newValue = Math.min(resource.value + amount, resource.max);
 
-      console.log(`${MODULE_ID} | Awarded ${amount} hero point(s) to ${character.name} (${numericCurrentValue} -> ${newValue})`);
+      // Update exactly like pf2e-hud does: system.resources.<name>.value
+      await character.update({ [`system.resources.${resource.name}.value`]: newValue });
 
-      // Display chat message for the bonus point
-      try {
-        await ChatMessage.create({
-          content: `
-            <div style="text-align: center; padding: 8px; background: linear-gradient(135deg, rgba(168, 85, 247, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.5);">
-              <h4 style="margin: 0 0 4px 0; color: #a855f7;"><i class="fas fa-star"></i> Bonus Hero Point!</h4>
-              <p style="margin: 0; color: #E5E7EB;"><strong>${character.name}</strong> received ${amount} bonus point${amount > 1 ? 's' : ''} for ${reason}!</p>
-            </div>
-          `,
-          whisper: []
-        });
-      } catch (chatError) {
-        console.error(`${MODULE_ID} | Error creating chat message:`, chatError);
-      }
+      console.log(`${MODULE_ID} | Awarded ${amount} bonus ${resource.name} to ${character.name} (${resource.value} → ${newValue})`);
+
+      await ChatMessage.create({
+        content: `
+          <div style="text-align: center; padding: 8px; background: linear-gradient(135deg, rgba(168, 85, 247, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%); border-radius: 8px; border: 1px solid rgba(168, 85, 247, 0.5);">
+            <h4 style="margin: 0 0 4px 0; color: #a855f7;"><i class="fas fa-star"></i> Bonus Hero Point!</h4>
+            <p style="margin: 0; color: #E5E7EB;"><strong>${character.name}</strong> received ${amount} bonus point${amount > 1 ? 's' : ''} for ${reason}!</p>
+          </div>
+        `,
+        whisper: []
+      });
 
       return character.name;
     } catch (error) {
